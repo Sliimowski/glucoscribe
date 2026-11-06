@@ -10,6 +10,7 @@ import ru.samokontrol.diary.SamokontrolApp
 import ru.samokontrol.diary.data.GlucoseEntry
 import ru.samokontrol.diary.data.MeasurementContext
 import ru.samokontrol.diary.domain.GlucoseMetrics
+import ru.samokontrol.diary.domain.GlucoseSample
 import ru.samokontrol.diary.domain.GlucoseStats
 import ru.samokontrol.diary.domain.GlucoseUnit
 
@@ -54,8 +55,8 @@ class DiaryViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun statsFor(days: Int, now: Long = System.currentTimeMillis()): GlucoseStats {
-        val values = entriesFor(days, now).map { it.mgdl }
-        return GlucoseMetrics.calculate(values)
+        val samples = entriesFor(days, now).map { GlucoseSample(it.mgdl, it.measuredAt) }
+        return GlucoseMetrics.calculate(samples, periodDays = days, now = now)
     }
 
     companion object {

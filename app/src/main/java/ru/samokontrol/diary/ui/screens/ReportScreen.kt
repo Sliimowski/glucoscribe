@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.samokontrol.diary.data.GlucoseEntry
 import ru.samokontrol.diary.domain.Glucose
+import ru.samokontrol.diary.domain.GlucoseMetrics
 import ru.samokontrol.diary.domain.GlucoseStats
 import ru.samokontrol.diary.domain.GlucoseUnit
 import ru.samokontrol.diary.export.ReportExporter
@@ -115,25 +116,31 @@ fun ReportScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "В целевом диапазоне",
+                        text = "Доля измерений в диапазоне",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "${pct(stats.timeInRangePercent)} %",
+                        text = "${pct(stats.inRangePercent)} %",
                         style = MaterialTheme.typography.displaySmall,
                         fontWeight = FontWeight.Bold,
                         color = Teal700,
                     )
+                    Text(
+                        text = "По ${stats.count} измерениям за ${stats.periodDays} дн. " +
+                            "Это не TIR по CGM: пропуски между замерами не учитываются.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Spacer(Modifier.height(8.dp))
                     LinearProgressIndicator(
-                        progress = { (stats.timeInRangePercent / 100.0).toFloat() },
+                        progress = { (stats.inRangePercent / 100.0).toFloat() },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        MiniMetric("Ниже", "${pct(stats.timeBelowPercent)} %", Danger)
-                        MiniMetric("Выше", "${pct(stats.timeAbovePercent)} %", Amber)
+                        MiniMetric("Ниже", "${pct(stats.belowPercent)} %", Danger)
+                        MiniMetric("Выше", "${pct(stats.abovePercent)} %", Amber)
                         MiniMetric("Точек", stats.count.toString(), MaterialTheme.colorScheme.onSurface)
                     }
                 }
@@ -142,8 +149,32 @@ fun ReportScreen(
             MetricRow("Средний уровень", "${Glucose.format(stats.meanMgdl.toInt(), unit)} ${unit.title}")
             MetricRow("Стандартное отклонение", "${Glucose.format(stats.sdMgdl.toInt(), unit)} ${unit.title}")
             MetricRow("Коэффициент вариации (CV)", "${pct(stats.cvPercent)} %")
-            MetricRow("GMI", "${pct(stats.gmiPercent)} %")
-            MetricRow("Оценка HbA1c (ADAG)", "${pct(stats.estimatedHba1cPercent)} %")
+            MetricRow(
+                "Тяжёлые низкие (< ${Glucose.format(GlucoseMetrics.SEVERE_LOW, unit)} ${unit.title})",
+                "${pct(stats.belowSeverePercent)} %",
+            )
+            MetricRow(
+                "Тяжёлые высокие (> ${Glucose.format(GlucoseMetrics.SEVERE_HIGH, unit)} ${unit.title})",
+                "${pct(stats.aboveSeverePercent)} %",
+            )
+            MetricRow(
+                "Дней с данными",
+                "${stats.measuredDays} из ${stats.periodDays} (${pct(stats.completenessPercent)} %)",
+            )
+            MetricRow("GMI (оценка, не HbA1c)", "${pct(stats.gmiPercent)} %")
+            MetricRow(
+                "Оценка HbA1c по ADAG (не лабораторный)",
+                "${pct(stats.estimatedHba1cPercent)} %",
+            )
+
+            if (stats.completenessPercent < 70.0) {
+                Text(
+                    text = "Мало данных: измерения есть только в ${stats.measuredDays} из " +
+                        "${stats.periodDays} дней. Доля в диапазоне и GMI могут быть смещены.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Danger,
+                )
+            }
 
             Spacer(Modifier.height(4.dp))
             Button(

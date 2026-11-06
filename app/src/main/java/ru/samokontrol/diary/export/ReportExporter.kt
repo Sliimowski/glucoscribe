@@ -15,6 +15,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import ru.samokontrol.diary.data.GlucoseEntry
 import ru.samokontrol.diary.domain.Glucose
+import ru.samokontrol.diary.domain.GlucoseMetrics
 import ru.samokontrol.diary.domain.GlucoseStats
 import ru.samokontrol.diary.domain.GlucoseUnit
 
@@ -106,11 +107,18 @@ object ReportExporter {
         text("Средний уровень: ${fmtGlucose(stats.meanMgdl, unit)} ${unit.title}")
         text("Стандартное отклонение: ${fmtGlucose(stats.sdMgdl, unit)} ${unit.title}")
         text("Коэффициент вариации (CV): ${fmt(stats.cvPercent)} %")
-        text("В целевом диапазоне (TIR ${Glucose.format(stats.lowMgdl, unit)}–${Glucose.format(stats.highMgdl, unit)}): ${fmt(stats.timeInRangePercent)} %")
-        text("Ниже диапазона: ${fmt(stats.timeBelowPercent)} %")
-        text("Выше диапазона: ${fmt(stats.timeAbovePercent)} %")
-        text("GMI: ${fmt(stats.gmiPercent)} %")
-        text("Оценка HbA1c (ADAG): ${fmt(stats.estimatedHba1cPercent)} %")
+        text(
+            "Доля измерений в диапазоне ${Glucose.format(stats.lowMgdl, unit)}–" +
+                "${Glucose.format(stats.highMgdl, unit)}: ${fmt(stats.inRangePercent)} %",
+        )
+        text("Это не TIR по CGM: пропуски между замерами не учитываются.", size = 9f, color = Color.GRAY)
+        text("Ниже диапазона: ${fmt(stats.belowPercent)} %")
+        text("Тяжёлые низкие (< ${Glucose.format(GlucoseMetrics.SEVERE_LOW, unit)} ${unit.title}): ${fmt(stats.belowSeverePercent)} %")
+        text("Выше диапазона: ${fmt(stats.abovePercent)} %")
+        text("Тяжёлые высокие (> ${Glucose.format(GlucoseMetrics.SEVERE_HIGH, unit)} ${unit.title}): ${fmt(stats.aboveSeverePercent)} %")
+        text("Дней с данными: ${stats.measuredDays} из ${stats.periodDays} (${fmt(stats.completenessPercent)} %)")
+        text("GMI (оценка, не HbA1c): ${fmt(stats.gmiPercent)} %")
+        text("Оценка HbA1c по ADAG (не лабораторный): ${fmt(stats.estimatedHba1cPercent)} %")
         y += 8f
         divider()
 
