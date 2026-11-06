@@ -31,7 +31,7 @@ import ru.samokontrol.diary.ui.DiaryViewModel
 import ru.samokontrol.diary.ui.components.GlucoseChart
 import kotlin.math.roundToInt
 
-private val PERIODS = listOf(7, 14, 30)
+private val PERIODS = listOf(3, 7, 14, 30)
 
 @Composable
 fun ChartScreen(
