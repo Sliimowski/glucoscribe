@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Дневник самоконтроля</string>
+    <string name="voice_entry_title">Записать сахар</string>
+    <string name="voice_widget_name">Запись глюкозы</string>
+    <string name="voice_widget_button">Записать голосом</string>
+    <string name="shortcut_sugar_short">Записать</string>
+    <string name="shortcut_sugar_long">Быстрая запись сахара голосом</string>
+    <string name="pin_shortcut_action">Добавить на рабочий стол</string>
+    <string name="pin_shortcut_unsupported">Лаунчер не поддерживает ярлыки на рабочем столе</string>
+    <string name="pin_shortcut_failed">Не удалось добавить ярлык</string>
+    <string name="widget_icon_name">Записать (иконка)</string>
+    <string name="widget_icon_description">Быстрая запись сахара одной иконкой на рабочем столе</string>
+</resources>

@@ -1,0 +1,125 @@
+Task 3 review package (no git; full file contents)
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\main\java\ru\samokontrol\hotwordspike\kws\HotwordDetector.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+/**
+ * Детектор ключевой фразы по шаблонам мел-признаков.
+ *
+ * Хранит кольцевой буфер последних [WINDOW_FRAMES] кадров (2 с при шаге 10 мс).
+ * Оценка считается, когда буфер заполнен, и далее каждые [SCORE_EVERY] кадров.
+ * Итоговая оценка — минимум DTW-расстояния по всем шаблонам.
+ *
+ * Срабатывание происходит, если оценка `<= threshold` и с прошлого срабатывания
+ * прошло не меньше [cooldownFrames] кадров; счётчик cooldown сбрасывается.
+ * Пустой список шаблонов → всегда `null`.
+ *
+ * @param templates эталонные последовательности мел-признаков (см. [MelFeatures.logMel]).
+ * @param threshold порог DTW-расстояния: меньше — ближе к шаблону.
+ * @param cooldownFrames минимальный интервал между срабатываниями в кадрах (50 = 0,5 с).
+ */
+class HotwordDetector(
+    private val templates: List<Array<FloatArray>>,
+    private val threshold: Float,
+    private val cooldownFrames: Int = DEFAULT_COOLDOWN_FRAMES,
+) {
+    private val buffer = ArrayDeque<FloatArray>(WINDOW_FRAMES)
+    private var framesSeen = 0L
+    private var framesSinceFire = Int.MAX_VALUE
+
+    /**
+     * Принимает один кадр мел-признаков (строка [MelFeatures.logMel]).
+     *
+     * @return оценка при срабатывании, иначе `null`.
+     */
+    fun accept(frame: FloatArray): Float? {
+        if (templates.isEmpty()) return null
+
+        // Копия защищает историю от переиспользования вызывающим буфера кадра.
+        buffer.addLast(frame.copyOf())
+        if (buffer.size > WINDOW_FRAMES) buffer.removeFirst()
+        framesSeen++
+        if (framesSinceFire < Int.MAX_VALUE) framesSinceFire++
+
+        if (buffer.size < WINDOW_FRAMES || framesSeen % SCORE_EVERY != 0L) return null
+
+        val score = bestScore(buffer.toTypedArray())
+        if (score > threshold || framesSinceFire < cooldownFrames) return null
+
+        framesSinceFire = 0
+        return score
+    }
+
+    private fun bestScore(window: Array<FloatArray>): Float {
+        var best = Float.MAX_VALUE
+        for (template in templates) {
+            val score = Dtw.score(template, window)
+            if (score < best) best = score
+        }
+        return best
+    }
+
+    private companion object {
+        /** Размер окна: 200 кадров = 2 с при шаге 10 мс. */
+        const val WINDOW_FRAMES = 200
+
+        /** Как часто считать оценку (в принятых кадрах). */
+        const val SCORE_EVERY = 10
+
+        /** Cooldown по умолчанию: 50 кадров = 0,5 с. */
+        const val DEFAULT_COOLDOWN_FRAMES = 50
+    }
+}
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\test\java\ru\samokontrol\hotwordspike\kws\HotwordDetectorTest.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+import kotlin.random.Random
+
+class HotwordDetectorTest {
+    private val template = Array(150) { i -> floatArrayOf(i / 150f, (i % 7) / 7f) }
+
+    @Test fun `fires on template repeated`() {
+        val d = HotwordDetector(listOf(template), threshold = 0.4f)
+        var fired = false
+        repeat(200) { d.accept(template[it % 150])?.let { fired = true } }
+        assertTrue(fired)
+    }
+
+    @Test fun `silent on noise`() {
+        val d = HotwordDetector(listOf(template), threshold = 0.4f)
+        val rnd = Random(1)
+        repeat(500) { d.accept(FloatArray(2) { rnd.nextFloat() * 10 })?.let { fail("false trigger") } }
+    }
+
+    @Test fun `cooldown blocks immediate second fire`() {
+        val d = HotwordDetector(listOf(template), threshold = 0.4f, cooldownFrames = 50)
+        val fires = mutableListOf<Int>()
+        repeat(400) { i -> d.accept(template[i % 150])?.let { fires += i } }
+        assertTrue("expected several fires, got $fires", fires.size > 1)
+        for (k in 1 until fires.size) {
+            assertTrue("fires too close: $fires", fires[k] - fires[k - 1] >= 50)
+        }
+    }
+
+    @Test fun `cooldown reduces fire count`() {
+        val free = HotwordDetector(listOf(template), threshold = 0.4f, cooldownFrames = 0)
+        val cooled = HotwordDetector(listOf(template), threshold = 0.4f, cooldownFrames = 50)
+        var freeFires = 0
+        var cooledFires = 0
+        repeat(400) { i ->
+            free.accept(template[i % 150])?.let { freeFires++ }
+            cooled.accept(template[i % 150])?.let { cooledFires++ }
+        }
+        assertTrue("free=$freeFires cooled=$cooledFires", cooledFires < freeFires)
+    }
+
+    @Test fun `no templates never fires`() {
+        val d = HotwordDetector(emptyList(), threshold = 1f)
+        repeat(300) { assertNull(d.accept(template[it % 150])) }
+    }
+}

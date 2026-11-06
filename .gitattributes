@@ -1,0 +1,13 @@
+# Нормализация переводов строк: в репозитории — LF, на Windows — CRLF.
+* text=auto
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+gradlew text eol=lf
+
+*.jar   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary

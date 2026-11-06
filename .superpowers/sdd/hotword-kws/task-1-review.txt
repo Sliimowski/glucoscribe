@@ -1,0 +1,226 @@
+Task 1 review package (project has no git; full file contents)
+
+===== FILE: C:\work\samokontrol\hotword-spike\build.gradle.kts =====
+plugins {
+    id("com.android.application")
+}
+
+android {
+    namespace = "ru.samokontrol.hotwordspike"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "ru.samokontrol.hotwordspike"
+        minSdk = 29
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// JUnit-воркер должен запускаться на JDK 17. Встроенный JBR 25 из Android Studio
+// роняет запуск тестов, а AGP/Studio могут сгенерировать gradle/gradle-daemon-jvm.properties
+// с JDK 25 для демона. Явный launcher делает тесты независимыми от версии JVM демона.
+tasks.withType<Test>().configureEach {
+    javaLauncher.set(
+        javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(17))
+        },
+    )
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.17.0")
+    testImplementation("junit:junit:4.13.2")
+}
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\main\java\ru\samokontrol\hotwordspike\kws\MelFeatures.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.ln
+import kotlin.math.log10
+import kotlin.math.pow
+import kotlin.math.sin
+
+/**
+ * Мел-признаки для KWS: 25 мс кадра, 10 мс шаг, 26 мел-полос 100–8000 Гц.
+ *
+ * Для каждого кадра считается сырой логарифм энергии в мел-полосах:
+ * `ln(energy + 1e-6)`. Центрирование по кадру не выполняется — это задача DTW.
+ */
+class MelFeatures(
+    val sampleRate: Int = 16000,
+    val frameLength: Int = 400,
+    val hopLength: Int = 160,
+    val bands: Int = 26,
+) {
+    private val fftSize = nextPowerOfTwo(frameLength)
+    private val window = FloatArray(frameLength) { i ->
+        (0.5 - 0.5 * cos(2.0 * PI * i / (frameLength - 1))).toFloat()
+    }
+    private val filters = buildFilters()
+
+    fun logMel(samples: ShortArray): Array<FloatArray> {
+        val count = frameCount(samples.size)
+        if (count == 0) return emptyArray()
+
+        val re = FloatArray(fftSize)
+        val im = FloatArray(fftSize)
+        return Array(count) { index ->
+            val offset = index * hopLength
+            for (i in 0 until frameLength) {
+                re[i] = samples[offset + i] * window[i]
+                im[i] = 0f
+            }
+            for (i in frameLength until fftSize) {
+                re[i] = 0f
+                im[i] = 0f
+            }
+            fft(re, im)
+            FloatArray(bands) { band ->
+                ln(melEnergy(band, re, im) + LOG_EPSILON)
+            }
+        }
+    }
+
+    private fun frameCount(size: Int): Int =
+        if (size < frameLength) 0 else (size - frameLength) / hopLength + 1
+
+    private fun melEnergy(band: Int, re: FloatArray, im: FloatArray): Float {
+        val weights = filters[band]
+        var energy = 0f
+        for (bin in weights.indices) {
+            val power = re[bin] * re[bin] + im[bin] * im[bin]
+            energy += weights[bin] * power
+        }
+        return energy
+    }
+
+    private fun buildFilters(): Array<FloatArray> {
+        val pointCount = bands + 2
+        val minMel = hzToMel(MIN_HZ)
+        val maxMel = hzToMel(minOf(MAX_HZ, sampleRate / 2.0))
+        val step = (maxMel - minMel) / (pointCount - 1)
+        val points = DoubleArray(pointCount) { melToHz(minMel + it * step) }
+
+        val binCount = fftSize / 2 + 1
+        return Array(bands) { band ->
+            val lower = points[band]
+            val center = points[band + 1]
+            val upper = points[band + 2]
+            FloatArray(binCount) { bin ->
+                val hz = bin.toDouble() * sampleRate / fftSize
+                when {
+                    hz <= lower || hz >= upper -> 0f
+                    hz <= center -> ((hz - lower) / (center - lower)).toFloat()
+                    else -> ((upper - hz) / (upper - center)).toFloat()
+                }
+            }
+        }
+    }
+
+    private fun fft(re: FloatArray, im: FloatArray) {
+        val n = re.size
+        var j = 0
+        for (i in 1 until n) {
+            var bit = n shr 1
+            while (j and bit != 0) {
+                j = j xor bit
+                bit = bit shr 1
+            }
+            j = j xor bit
+            if (i < j) {
+                swap(re, i, j)
+                swap(im, i, j)
+            }
+        }
+
+        var length = 2
+        while (length <= n) {
+            val angle = -2.0 * PI / length
+            val stepRe = cos(angle).toFloat()
+            val stepIm = sin(angle).toFloat()
+            var start = 0
+            while (start < n) {
+                var curRe = 1f
+                var curIm = 0f
+                val half = length / 2
+                for (k in 0 until half) {
+                    val a = start + k
+                    val b = a + half
+                    val vRe = re[b] * curRe - im[b] * curIm
+                    val vIm = re[b] * curIm + im[b] * curRe
+                    re[b] = re[a] - vRe
+                    im[b] = im[a] - vIm
+                    re[a] += vRe
+                    im[a] += vIm
+                    val nextRe = curRe * stepRe - curIm * stepIm
+                    curIm = curRe * stepIm + curIm * stepRe
+                    curRe = nextRe
+                }
+                start += length
+            }
+            length = length shl 1
+        }
+    }
+
+    private fun swap(data: FloatArray, a: Int, b: Int) {
+        val tmp = data[a]
+        data[a] = data[b]
+        data[b] = tmp
+    }
+
+    private fun hzToMel(hz: Double): Double = 2595.0 * log10(1.0 + hz / 700.0)
+
+    private fun melToHz(mel: Double): Double = 700.0 * (10.0.pow(mel / 2595.0) - 1.0)
+
+    private fun nextPowerOfTwo(value: Int): Int {
+        var result = 1
+        while (result < value) result = result shl 1
+        return result
+    }
+
+    private companion object {
+        const val MIN_HZ = 100.0
+        const val MAX_HZ = 8000.0
+        const val LOG_EPSILON = 1e-6f
+    }
+}
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\test\java\ru\samokontrol\hotwordspike\kws\MelFeaturesTest.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlin.math.PI
+import kotlin.math.sin
+
+class MelFeaturesTest {
+    private val features = MelFeatures()
+
+    @Test fun `frame count follows hop`() {
+        val frames = features.logMel(ShortArray(16000))
+        assertEquals(98, frames.size) // (16000-400)/160 + 1
+        assertEquals(26, frames[0].size)
+    }
+
+    @Test fun `silence gives very low energy`() {
+        val frames = features.logMel(ShortArray(16000))
+        assertTrue(frames.all { row -> row.all { it < -8f } })
+    }
+
+    @Test fun `one kilohertz tone lights low bands`() {
+        val samples = ShortArray(16000) { i -> (8000 * sin(2 * PI * 1000 * i / 16000)).toInt().toShort() }
+        val row = features.logMel(samples)[40]
+        val peak = row.indices.maxByOrNull { row[it] }!!
+        assertTrue("peak band=$peak", peak in 4..10)
+    }
+}

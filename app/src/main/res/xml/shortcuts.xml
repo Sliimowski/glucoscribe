@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_sugar"
+        android:shortcutId="record_sugar"
+        android:shortcutLongLabel="@string/shortcut_sugar_long"
+        android:shortcutShortLabel="@string/shortcut_sugar_short">
+        <intent
+            android:action="ru.samokontrol.diary.action.VOICE_ENTRY"
+            android:targetClass="ru.samokontrol.diary.MainActivity"
+            android:targetPackage="ru.samokontrol.diary" />
+    </shortcut>
+</shortcuts>

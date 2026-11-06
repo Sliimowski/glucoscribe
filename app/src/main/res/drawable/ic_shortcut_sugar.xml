@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Линейный глиф в стиле остальных иконок рабочего стола: прозрачный фон,
+         цвет #8FD8FF, штрих 6.5 при viewport 108. -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M40,37a11,11 0 0 1 22,0v12a11,11 0 0 1 -22,0Z"
+        android:strokeColor="#8FD8FF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6.5" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M29,50v3a22,22 0 0 0 44,0v-3"
+        android:strokeColor="#8FD8FF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6.5" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M51,75v12M41,87h20"
+        android:strokeColor="#8FD8FF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6.5" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M85,22v14M78,29h14"
+        android:strokeColor="#8FD8FF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6.5" />
+</vector>

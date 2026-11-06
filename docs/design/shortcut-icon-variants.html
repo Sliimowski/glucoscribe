@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", sans-serif;
+    color: #fff;
+    background:
+      radial-gradient(circle at 30% 20%, #16324a 0%, #0b1620 45%, #060d14 100%);
+    min-height: 100vh;
+    padding: 28px 36px 40px;
+  }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: #8fa9bd; font-size: 14px; margin-bottom: 22px; }
+  .ref { display: flex; gap: 26px; align-items: flex-end; margin-bottom: 28px; }
+  .ref img { width: 1080px; max-width: 100%; border-radius: 10px; opacity: .95; }
+  .grid { display: flex; gap: 22px; flex-wrap: wrap; }
+  .card {
+    width: 210px;
+    padding: 18px 14px 16px;
+    border-radius: 18px;
+    background: rgba(255,255,255,.035);
+    border: 1px solid rgba(143,216,255,.14);
+    text-align: center;
+  }
+  .icon { width: 100px; height: 100px; margin: 0 auto 10px; display: block; }
+  .name { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .desc { font-size: 12px; color: #93aec2; line-height: 1.35; }
+  .tag { display:inline-block; font-size: 10px; letter-spacing:.06em; text-transform: uppercase;
+         color:#8FD8FF; border:1px solid rgba(143,216,255,.4); border-radius: 999px;
+         padding: 2px 8px; margin-bottom: 8px; }
+  .current { filter: none; }
+</style>
+</head>
+<body>
+  <h1>Значок быстрой записи: варианты в стиле рабочего стола</h1>
+  <div class="sub">Референс — реальные иконки на вашем экране: прозрачный фон, линия #8FD8FF, штрих ~8 px на 100 px.</div>
+
+  <div class="ref"><img src="icons-reference.png" alt="reference icons"></div>
+
+  <div class="grid">
+
+    <div class="card">
+      <div class="tag">текущий</div>
+      <svg class="icon" viewBox="0 0 108 108">
+        <path fill="#0F766E" d="M26,4H82A22,22 0 0 1 104,26V82A22,22 0 0 1 82,104H26A22,22 0 0 1 4,82V26A22,22 0 0 1 26,4Z"/>
+        <g transform="translate(27,16) scale(2.3)">
+          <path fill="#fff" d="M12,14c1.66,0 2.99,-1.34 2.99,-3L15,5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3zM17.3,11c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11L5,11c0,3.41 2.72,6.23 6,6.72L11,21h2v-3.28c3.28,-0.48 6,-3.3 6,-6.72h-1.7z"/>
+        </g>
+        <path fill="#fff" d="M82,66a16,16 0 1 0 0,32a16,16 0 1 0 0,-32Z"/>
+        <path fill="#0F766E" d="M79.5,73h5v6.5h6.5v5h-6.5v6.5h-5v-6.5h-6.5v-5h6.5Z"/>
+      </svg>
+      <div class="name">Плитка</div>
+      <div class="desc">Текущий: заливка выбивается из линейного набора</div>
+    </div>
+
+    <div class="card">
+      <div class="tag">A</div>
+      <svg class="icon" viewBox="0 0 108 108" fill="none" stroke="#8FD8FF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="40" y="26" width="22" height="34" rx="11"/>
+        <path d="M29 50v3a22 22 0 0 0 44 0v-3"/>
+        <path d="M51 75v12M41 87h20"/>
+        <path d="M85 22v14M78 29h14"/>
+      </svg>
+      <div class="name">Микрофон + плюс</div>
+      <div class="desc">Самостоятельный глиф, как у Telegram и Mattermost. Самый нейтральный</div>
+    </div>
+
+    <div class="card">
+      <div class="tag">B</div>
+      <svg class="icon" viewBox="0 0 108 108" fill="none" stroke="#8FD8FF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="54" cy="56" r="37"/>
+        <rect x="45" y="35" width="18" height="28" rx="9"/>
+        <path d="M36 54v2a18 18 0 0 0 36 0v-2"/>
+        <path d="M54 74v9M46 83h16"/>
+        <path d="M88 14v12M82 20h12"/>
+      </svg>
+      <div class="name">Микрофон в круге</div>
+      <div class="desc">Круг, как у VK и Chrome. Компактнее, сильнее читается как «приложение»</div>
+    </div>
+
+    <div class="card">
+      <div class="tag">C</div>
+      <svg class="icon" viewBox="0 0 108 108" fill="none" stroke="#8FD8FF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="39" y="24" width="24" height="30" rx="5"/>
+        <path d="M39 35h24M51 24v30"/>
+        <path d="M29 52v2a22 22 0 0 0 44 0v-2"/>
+        <path d="M51 76v11M41 87h20"/>
+        <path d="M85 22v14M78 29h14"/>
+      </svg>
+      <div class="name">Кубик сахара + плюс</div>
+      <div class="desc">Голова микрофона как кубик сахара. Тематичнее, но чуть сложнее</div>
+    </div>
+
+    <div class="card">
+      <div class="tag">D</div>
+      <svg class="icon" viewBox="0 0 108 108" fill="none" stroke="#8FD8FF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M54 14C43 30 33 42 33 55a21 21 0 0 0 42 0c0-13-10-25-21-41Z"/>
+        <rect x="46" y="43" width="16" height="24" rx="8"/>
+        <path d="M39 60v2a16 16 0 0 0 30 0v-2"/>
+        <path d="M54 78v8"/>
+        <path d="M86 24v12M80 30h12"/>
+      </svg>
+      <div class="name">Капля + микрофон</div>
+      <div class="desc">Продолжает фирменную каплю приложения. Максимально «в бренде»</div>
+    </div>
+
+  </div>
+</body>
+</html>

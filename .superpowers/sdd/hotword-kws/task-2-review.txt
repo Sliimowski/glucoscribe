@@ -1,0 +1,121 @@
+Task 2 review package (no git; full file contents)
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\main\java\ru\samokontrol\hotwordspike\kws\Dtw.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.sqrt
+
+/**
+ * DTW-сравнение двух последовательностей мел-признаков.
+ *
+ * `MelFeatures.logMel` возвращает сырые лог-энергии, поэтому каждая
+ * последовательность центрируется отдельно: из всех значений вычитается
+ * её среднее по всем кадрам и полосам. Это убирает зависимость от громкости.
+ */
+object Dtw {
+    /**
+     * Нормированное расстояние между [template] и [window] (0 — идентично).
+     * Пустые последовательности дают [Float.MAX_VALUE].
+     *
+     * @param band полуширина полосы Сакое–Чибы: `|i/n - j/m| <= band`.
+     */
+    fun score(template: Array<FloatArray>, window: Array<FloatArray>, band: Float = 0.2f): Float {
+        val n = template.size
+        val m = window.size
+        if (n == 0 || m == 0) return Float.MAX_VALUE
+
+        val a = centered(template)
+        val b = centered(window)
+
+        val inf = Float.POSITIVE_INFINITY
+        val cost = Array(n) { FloatArray(m) { inf } }
+        val length = Array(n) { IntArray(m) }
+
+        for (i in 0 until n) {
+            for (j in 0 until m) {
+                if (abs(i.toFloat() / n - j.toFloat() / m) > band) continue
+                val cell = distance(a[i], b[j])
+
+                val diagonal = if (i > 0 && j > 0) cost[i - 1][j - 1] else inf
+                val up = if (i > 0) cost[i - 1][j] else inf
+                val left = if (j > 0) cost[i][j - 1] else inf
+
+                val best = minOf(diagonal, up, left)
+                if (best.isInfinite()) {
+                    // Начало пути.
+                    cost[i][j] = cell
+                    length[i][j] = 1
+                } else {
+                    cost[i][j] = cell + best
+                    length[i][j] = when (best) {
+                        diagonal -> length[i - 1][j - 1]
+                        up -> length[i - 1][j]
+                        else -> length[i][j - 1]
+                    } + 1
+                }
+            }
+        }
+
+        val total = cost[n - 1][m - 1]
+        val steps = length[n - 1][m - 1]
+        if (total.isInfinite() || steps == 0) return Float.MAX_VALUE
+        return total / steps
+    }
+
+    /** Копия последовательности с вычтенным общим средним. */
+    private fun centered(sequence: Array<FloatArray>): Array<FloatArray> {
+        var sum = 0.0
+        var count = 0
+        for (row in sequence) {
+            for (value in row) {
+                sum += value
+                count++
+            }
+        }
+        val mean = if (count == 0) 0f else (sum / count).toFloat()
+        return Array(sequence.size) { i -> FloatArray(sequence[i].size) { j -> sequence[i][j] - mean } }
+    }
+
+    private fun distance(x: FloatArray, y: FloatArray): Float {
+        val size = min(x.size, y.size)
+        var sum = 0f
+        for (k in 0 until size) {
+            val d = x[k] - y[k]
+            sum += d * d
+        }
+        return sqrt(sum)
+    }
+}
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\test\java\ru\samokontrol\hotwordspike\kws\DtwTest.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class DtwTest {
+    private fun seq(vararg v: Float) = Array(v.size) { floatArrayOf(v[it], v[it] * 2) }
+
+    @Test fun `identical is zero`() = assertEquals(0f, Dtw.score(seq(1f, 2f, 3f), seq(1f, 2f, 3f)), 0.001f)
+
+    @Test fun `stretched is small`() {
+        val t = seq(1f, 2f, 3f, 4f, 5f)
+        val w = seq(1f, 1.5f, 2f, 2.5f, 3f, 3.5f, 4f, 4.5f, 5f)
+        assertTrue(Dtw.score(t, w) < 0.5f)
+    }
+
+    @Test fun `noise is far`() {
+        val t = seq(1f, 2f, 3f, 4f)
+        val w = seq(9f, 1f, 7f, 2f, 8f, 3f)
+        assertTrue(Dtw.score(t, w) > 0.5f)
+    }
+
+    @Test fun `loud and quiet copies score the same`() {
+        val t = seq(1f, 2f, 3f, 4f, 5f)
+        val loud = Array(t.size) { i -> FloatArray(t[i].size) { j -> t[i][j] + 25f } }
+        assertTrue(Dtw.score(t, loud) < 0.01f)
+    }
+}

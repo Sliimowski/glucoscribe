@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama-lan": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (LAN)",
+      "options": {
+        "baseURL": "http://192.168.1.63:11434/v1",
+        "apiKey": "ollama"
+      },
+      "models": {
+        "gemma4:12b": {
+          "name": "Gemma 4 12B (LAN)",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        }
+      }
+    }
+  }
+}

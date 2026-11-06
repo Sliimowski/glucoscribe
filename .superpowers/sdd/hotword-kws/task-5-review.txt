@@ -1,0 +1,399 @@
+Task 5 review package (no git; full file contents)
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\main\java\ru\samokontrol\hotwordspike\ListenService.kt =====
+package ru.samokontrol.hotwordspike
+
+import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.BatteryManager
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import android.util.Log
+import ru.samokontrol.hotwordspike.kws.HotwordDetector
+import ru.samokontrol.hotwordspike.kws.MelFeatures
+import ru.samokontrol.hotwordspike.kws.TemplateStore
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.sqrt
+
+/**
+ * Спайк постоянного прослушивания микрофона.
+ *
+ * Пишет факт активности (грубый VAD по RMS), срабатывания KWS-детектора
+ * ключевой фразы, расход батареи, состояние экрана и перезапуски сервиса.
+ */
+class ListenService : Service() {
+
+    private var record: AudioRecord? = null
+    private var thread: Thread? = null
+    private val running = AtomicBoolean(false)
+    private lateinit var logger: SpikeLogger
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> logger.log("screen on")
+                Intent.ACTION_SCREEN_OFF -> logger.log("screen off")
+            }
+        }
+    }
+
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val plugged = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+            if (level >= 0 && scale > 0) {
+                val percent = level * 100 / scale
+                if (percent != lastBatteryPercent) {
+                    lastBatteryPercent = percent
+                    logger.log("battery $percent% plugged=$plugged")
+                }
+            }
+        }
+    }
+
+    private var lastBatteryPercent = -1
+
+    override fun onCreate() {
+        super.onCreate()
+        logger = SpikeLogger(this)
+        logger.log(
+            "service created pid=${android.os.Process.myPid()} " +
+                "sdk=${Build.VERSION.SDK_INT}",
+        )
+        createChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            logger.log("stop requested from notification")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification())
+            logger.log("startForeground ok")
+        } catch (t: Throwable) {
+            logger.log("startForeground failed: ${t.javaClass.name} ${t.message}")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        registerReceiver(screenReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        })
+        registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        if (running.compareAndSet(false, true)) {
+            logger.log("listening started")
+            thread = Thread(::listenLoop, "spike-listen").apply { start() }
+        } else {
+            logger.log("start ignored: already running")
+        }
+        return START_STICKY
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun listenLoop() {
+        val sampleRate = 16000
+        // Кадр KWS/цикла: 160 отсчётов = 10 мс.
+        val hopSamples = 160
+        val windowSamples = 400 // окно 25 мс для мел-признаков
+        val minBuffer = AudioRecord.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        val bufferSize = maxOf(minBuffer, hopSamples * 2 * 16)
+        val kws = loadDetector()
+        val recorder = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize,
+            )
+        } catch (t: Throwable) {
+            logger.log("AudioRecord create failed: ${t.javaClass.simpleName} ${t.message}")
+            return
+        }
+        record = recorder
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            logger.log("AudioRecord not initialized state=${recorder.state}")
+            recorder.release()
+            record = null
+            return
+        }
+        try {
+            recorder.startRecording()
+            logger.log("AudioRecord started rate=$sampleRate buffer=$bufferSize")
+        } catch (t: Throwable) {
+            logger.log("AudioRecord start failed: ${t.javaClass.simpleName} ${t.message}")
+            recorder.release()
+            record = null
+            return
+        }
+
+        val data = ShortArray(hopSamples)
+        // Кольцевой буфер последних 400 отсчётов; windowLinear — его
+        // упорядоченная копия, которую ожидает MelFeatures.
+        val ring = ShortArray(windowSamples)
+        val windowLinear = ShortArray(windowSamples)
+        var ringPos = 0
+        var filled = false
+
+        var speechFrames = 0
+        var eventOpen = false
+        var eventStart = 0L
+        var lastEventAt = 0L
+        var rmsSum = 0L
+        var rmsCount = 0L
+        var matchCount = 0
+        var lastHeartbeat = System.currentTimeMillis()
+
+        while (running.get()) {
+            val read = try {
+                recorder.read(data, 0, data.size)
+            } catch (t: Throwable) {
+                logger.log("read failed: ${t.javaClass.simpleName} ${t.message}")
+                break
+            }
+            if (read != hopSamples) {
+                // Частичный/пустой read: не сбиваем кадрирование окна.
+                logger.log("read returned $read")
+                continue
+            }
+            var sum = 0.0
+            for (i in 0 until hopSamples) {
+                val v = data[i].toDouble()
+                sum += v * v
+            }
+            val rms = sqrt(sum / hopSamples)
+            rmsSum += rms.toLong()
+            rmsCount++
+            if (rms >= RMS_THRESHOLD) speechFrames++ else speechFrames = 0
+
+            // Обновляем кольцевой буфер окна 400 отсчётов.
+            for (i in 0 until hopSamples) {
+                ring[ringPos] = data[i]
+                ringPos++
+                if (ringPos == windowSamples) {
+                    ringPos = 0
+                    filled = true
+                }
+            }
+            if (kws != null && filled) {
+                // ringPos — начало самой старой части, ровно 400 отсчётов по порядку.
+                val tail = windowSamples - ringPos
+                System.arraycopy(ring, ringPos, windowLinear, 0, tail)
+                System.arraycopy(ring, 0, windowLinear, tail, ringPos)
+                val row = KWS_FEATURES.logMel(windowLinear).lastOrNull()
+                if (row != null) {
+                    val score = kws.accept(row)
+                    if (score != null) {
+                        matchCount++
+                        logger.log(
+                            String.format(
+                                Locale.US,
+                                "kws match score=%.4f total=%d",
+                                score,
+                                matchCount,
+                            ),
+                        )
+                    }
+                }
+            }
+
+            val now = System.currentTimeMillis()
+            if (speechFrames >= 3 && !eventOpen) {
+                eventOpen = true
+                eventStart = now
+                lastEventAt = now
+                logger.log("voice event start rms=${rms.toInt()}")
+            } else if (eventOpen && rms >= RMS_THRESHOLD * 0.6) {
+                lastEventAt = now
+                if (now - eventStart > MAX_EVENT_MS) {
+                    logger.log("voice event continued >${MAX_EVENT_MS / 1000}s")
+                    eventStart = now
+                }
+            } else if (eventOpen && now - lastEventAt > 1000) {
+                eventOpen = false
+                logger.log("voice event end duration=${now - eventStart}ms")
+            }
+
+            if (now - lastHeartbeat >= HEARTBEAT_MS) {
+                lastHeartbeat = now
+                val avg = if (rmsCount > 0) rmsSum / rmsCount else 0
+                logger.log(
+                    "heartbeat frames=$rmsCount avgRms=$avg kwsMatches=$matchCount " +
+                        "screen=${isScreenOn()}",
+                )
+                rmsSum = 0
+                rmsCount = 0
+            }
+        }
+
+        try {
+            recorder.stop()
+        } catch (_: Throwable) {
+        }
+        recorder.release()
+        record = null
+        logger.log("listen loop finished")
+    }
+
+    /**
+     * Ленивая загрузка детектора в фоновом потоке: при отсутствии/порче
+     * assets сервис продолжает работать с одним VAD.
+     */
+    private fun loadDetector(): HotwordDetector? {
+        val result = runCatching {
+            val templates = TemplateStore.loadTemplates(
+                assets,
+                "hotword/${TemplateStore.TEMPLATES_FILE}",
+            )
+            val threshold = TemplateStore.loadThreshold(
+                assets,
+                "hotword/${TemplateStore.THRESHOLD_FILE}",
+            )
+            require(templates.isNotEmpty()) { "templates empty" }
+            HotwordDetector(templates, threshold).also {
+                logger.log("kws enabled templates=${templates.size} threshold=$threshold")
+            }
+        }
+        return result.getOrElse { t ->
+            logger.log("kws disabled: ${t.javaClass.name} ${t.message}")
+            null
+        }
+    }
+
+    private fun isScreenOn(): Boolean =
+        (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
+
+    override fun onDestroy() {
+        logger.log("service destroyed")
+        running.set(false)
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (_: Throwable) {
+        }
+        try {
+            unregisterReceiver(batteryReceiver)
+        } catch (_: Throwable) {
+        }
+        record?.let {
+            try {
+                it.stop()
+            } catch (_: Throwable) {
+            }
+            it.release()
+        }
+        record = null
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun createChannel() {
+        val manager = getSystemService(NotificationManager::class.java)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.channel),
+            NotificationManager.IMPORTANCE_LOW,
+        )
+        manager.createNotificationChannel(channel)
+    }
+
+    private fun buildNotification(): Notification {
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stop = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, ListenService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.notification_title))
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentIntent(open)
+            .addAction(
+                Notification.Action.Builder(
+                    null,
+                    getString(R.string.notification_stop),
+                    stop,
+                ).build(),
+            )
+            .setOngoing(true)
+            .build()
+    }
+
+    companion object {
+        const val ACTION_STOP = "ru.samokontrol.hotwordspike.STOP"
+        private const val CHANNEL_ID = "spike"
+        private const val NOTIFICATION_ID = 1
+        private const val HEARTBEAT_MS = 10 * 60 * 1000L
+        private const val MAX_EVENT_MS = 30_000L
+        private const val RMS_THRESHOLD = 1200.0
+
+        /** Создаётся один раз: окно 25 мс, шаг 10 мс, 26 мел-полос. */
+        private val KWS_FEATURES = MelFeatures(
+            sampleRate = 16000,
+            frameLength = 400,
+            hopLength = 160,
+            bands = 26,
+        )
+
+        fun start(context: Context) {
+            val intent = Intent(context, ListenService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, ListenService::class.java))
+        }
+    }
+}
+
+/** Простой файловый лог, чтобы снять его через adb после суток работы. */
+class SpikeLogger(context: Context) {
+
+    // Device-protected storage доступно до первой разблокировки, поэтому
+    // события после перезагрузки не теряются.
+    private val target = context.createDeviceProtectedStorageContext()
+    private val file = File(target.filesDir, "spike.log")
+    private val format = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+
+    fun log(message: String) {
+        val line = "${format.format(Date())} $message"
+        Log.i("HotwordSpike", line)
+        try {
+            file.appendText(line + "\n")
+        } catch (_: Throwable) {
+        }
+    }
+}

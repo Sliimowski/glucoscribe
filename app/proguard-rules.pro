@@ -1,0 +1,1 @@
+# Keep default. Project is not minified in the first slice.

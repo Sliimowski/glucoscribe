@@ -1,0 +1,704 @@
+Task 4 re-review after fixes (no git; full file contents)
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\main\java\ru\samokontrol\hotwordspike\kws\TemplateStore.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+import android.content.res.AssetManager
+import java.io.File
+import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
+/**
+ * Хранилище эталонов и порога.
+ *
+ * `templates.bin`: ASCII `HWK1`, затем `int count`, `int rows`, `int dims`,
+ * далее `count * rows * dims` значений `float` little-endian.
+ *
+ * Если шаблоны имеют разное число кадров (как в round-trip тесте), поле `rows`
+ * равно 0, а перед данными каждого шаблона пишется его собственный `int rows`.
+ * Такой файл читается только этим загрузчиком; прямоугольные файлы полностью
+ * соответствуют формату выше.
+ *
+ * `threshold.txt`: одна строка с числом (`Float.toString`).
+ */
+object TemplateStore {
+    private val MAGIC = byteArrayOf('H'.code.toByte(), 'W'.code.toByte(), 'K'.code.toByte(), '1'.code.toByte())
+    private const val HEADER_BYTES = 4 + 4 + 4 + 4
+    const val TEMPLATES_FILE = "templates.bin"
+    const val THRESHOLD_FILE = "threshold.txt"
+
+    fun saveTemplates(dir: File, name: String, templates: List<Array<FloatArray>>) {
+        val dims = templates.firstOrNull()?.firstOrNull()?.size ?: 0
+        templates.forEach { template ->
+            template.forEach { frame ->
+                require(frame.size == dims) { "Все кадры должны иметь одинаковую размерность" }
+            }
+        }
+        val uniformRows = templates.all { it.size == (templates.firstOrNull()?.size ?: 0) }
+        val rows = if (uniformRows) templates.firstOrNull()?.size ?: 0 else 0
+
+        var size = HEADER_BYTES.toLong()
+        if (!uniformRows) size += templates.size.toLong() * 4
+        templates.forEach { template ->
+            size += template.size.toLong() * dims * 4
+        }
+        check(size <= Int.MAX_VALUE) { "Слишком большой набор шаблонов" }
+
+        val buffer = ByteBuffer.allocate(size.toInt()).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.put(MAGIC)
+        buffer.putInt(templates.size)
+        buffer.putInt(rows)
+        buffer.putInt(dims)
+        templates.forEach { template ->
+            if (!uniformRows) buffer.putInt(template.size)
+            template.forEach { frame ->
+                frame.forEach { value -> buffer.putFloat(value) }
+            }
+        }
+
+        dir.mkdirs()
+        // Пишем ровно заполненную часть буфера, без хвостовых нулей.
+        File(dir, name).writeBytes(buffer.array().copyOf(buffer.position()))
+    }
+
+    fun loadTemplatesFromDir(dir: File, name: String): List<Array<FloatArray>> {
+        val file = File(dir, name)
+        if (!file.exists()) return emptyList()
+        return file.inputStream().use { readTemplates(it) }
+    }
+
+    fun loadTemplates(assets: AssetManager, path: String): List<Array<FloatArray>> =
+        assets.open(path).use { readTemplates(it) }
+
+    fun saveThreshold(dir: File, value: Float) {
+        dir.mkdirs()
+        File(dir, THRESHOLD_FILE).writeText(value.toString())
+    }
+
+    fun loadThreshold(assets: AssetManager, path: String): Float =
+        assets.open(path).use { it.readThreshold() }
+
+    fun loadThresholdFromDir(dir: File): Float =
+        File(dir, THRESHOLD_FILE).inputStream().use { it.readThreshold() }
+
+    private fun readTemplates(input: InputStream): List<Array<FloatArray>> {
+        val bytes = input.readBytes()
+        if (bytes.size < HEADER_BYTES) return emptyList()
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        val magic = ByteArray(4).also { buffer.get(it) }
+        if (!magic.contentEquals(MAGIC)) return emptyList()
+
+        val count = buffer.int
+        val headerRows = buffer.int
+        val dims = buffer.int
+        if (count < 0 || headerRows < 0 || dims < 0) return emptyList()
+        if (count > 0 && dims == 0) return emptyList()
+
+        val remaining = buffer.remaining().toLong()
+        val frameBytes = dims.toLong() * 4
+
+        if (headerRows > 0) {
+            if (frameBytes > 0 && headerRows.toLong() > remaining / frameBytes) return emptyList()
+            val perTemplate = headerRows.toLong() * frameBytes
+            if (perTemplate > 0 && count.toLong() > remaining / perTemplate) return emptyList()
+            if (count.toLong() * perTemplate != remaining) return emptyList()
+            return List(count) { Array(headerRows) { FloatArray(dims) { buffer.float } } }
+        }
+
+        // Ragged-набор: перед каждым шаблоном свой int rows. Список не
+        // предаллоцируем по count, чтобы повреждённый count не вызвал OOM.
+        val templates = ArrayList<Array<FloatArray>>()
+        repeat(count) {
+            if (buffer.remaining() < 4) return emptyList()
+            val rows = buffer.int
+            if (rows < 0) return emptyList()
+            if (frameBytes > 0 && rows.toLong() > buffer.remaining() / frameBytes) return emptyList()
+            templates += Array(rows) { FloatArray(dims) { buffer.float } }
+        }
+        if (buffer.hasRemaining()) return emptyList()
+        return templates
+    }
+
+    private fun InputStream.readThreshold(): Float =
+        bufferedReader().use { it.readLine() }.trim().toFloat()
+}
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\main\java\ru\samokontrol\hotwordspike\kws\SampleRecorder.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import kotlin.math.max
+import kotlin.math.sqrt
+
+/**
+ * Запись образцов с микрофона: 16 кГц, моно, PCM16, [MediaRecorder.AudioSource.VOICE_RECOGNITION].
+ *
+ * Аудио в файлы не пишется: [record] возвращает мел-признаки, [recordRaw] — сырые сэмплы
+ * для калибровки. [AudioRecord] всегда освобождается в `finally`.
+ */
+class SampleRecorder(
+    private val features: MelFeatures,
+    private val sampleRate: Int = 16000,
+) {
+    /**
+     * Блокирующая запись [durationMs], обрезка тишины по краям.
+     *
+     * @throws IllegalStateException если [AudioRecord] не инициализировался.
+     */
+    fun record(durationMs: Int = 2200): Array<FloatArray> {
+        val raw = recordRaw(durationMs)
+        val features = features.logMel(trimSilence(raw))
+        if (features.isEmpty()) throw IllegalStateException("microphone returned no data")
+        return features
+    }
+
+    /**
+     * Запись фона [durationMs] без обрезки — для калибровки нужен сырой поток.
+     *
+     * @throws IllegalStateException если [AudioRecord] не инициализировался.
+     */
+    fun recordRaw(durationMs: Int = 30_000): ShortArray {
+        val totalSamples = max(1, sampleRate * durationMs / 1000)
+        val minBuffer = AudioRecord.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        if (minBuffer <= 0) throw IllegalStateException("AudioRecord: неверные параметры записи")
+
+        val record = AudioRecord(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            max(minBuffer, sampleRate),
+        )
+        try {
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                throw IllegalStateException("AudioRecord не инициализировался (state=${record.state})")
+            }
+            val result = ShortArray(totalSamples)
+            record.startRecording()
+            var read = 0
+            while (read < totalSamples) {
+                val chunk = record.read(result, read, totalSamples - read)
+                if (chunk <= 0) {
+                    if (read == 0) throw IllegalStateException("microphone returned no data")
+                    break
+                }
+                read += chunk
+            }
+            if (read == 0) throw IllegalStateException("microphone returned no data")
+            return if (read == totalSamples) result else result.copyOf(read)
+        } finally {
+            try {
+                record.stop()
+            } catch (_: IllegalStateException) {
+            }
+            record.release()
+        }
+    }
+
+    /**
+     * Обрезка тишины: RMS по кадрам 20 мс, порог — 10% от максимального RMS.
+     * Оставляем не меньше 1 с, расширяя область симметрично вокруг центра.
+     */
+    private fun trimSilence(samples: ShortArray): ShortArray {
+        val frame = max(1, sampleRate / 50)
+        if (samples.size <= frame) return samples
+
+        val frameCount = samples.size / frame
+        val rms = DoubleArray(frameCount)
+        var maxRms = 0.0
+        for (i in 0 until frameCount) {
+            var sum = 0.0
+            val offset = i * frame
+            for (j in offset until offset + frame) {
+                val value = samples[j].toDouble()
+                sum += value * value
+            }
+            rms[i] = sqrt(sum / frame)
+            if (rms[i] > maxRms) maxRms = rms[i]
+        }
+
+        val gate = maxRms * 0.1
+        var first = 0
+        while (first < frameCount && rms[first] <= gate) first++
+        var last = frameCount - 1
+        while (last >= first && rms[last] <= gate) last--
+
+        if (first > last) {
+            // Полная тишина: берём центральную секунду, чтобы не отдавать пустой массив.
+            val start = ((samples.size - sampleRate) / 2).coerceIn(0, samples.size)
+            return samples.copyOfRange(start, minOf(samples.size, start + sampleRate))
+        }
+
+        var start = first * frame
+        var end = minOf(samples.size, (last + 1) * frame)
+        val minLength = minOf(sampleRate, samples.size)
+        if (end - start < minLength) {
+            val center = (start + end) / 2
+            start = (center - minLength / 2).coerceIn(0, samples.size - minLength)
+            end = start + minLength
+        }
+        return samples.copyOfRange(start, end)
+    }
+}
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\main\java\ru\samokontrol\hotwordspike\MainActivity.kt =====
+package ru.samokontrol.hotwordspike
+
+import android.Manifest
+import android.app.Activity
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.os.PowerManager
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import java.io.File
+import ru.samokontrol.hotwordspike.kws.Dtw
+import ru.samokontrol.hotwordspike.kws.MelFeatures
+import ru.samokontrol.hotwordspike.kws.SampleRecorder
+import ru.samokontrol.hotwordspike.kws.TemplateStore
+
+class MainActivity : Activity() {
+
+    private lateinit var status: TextView
+    private val logger by lazy { SpikeLogger(this) }
+    private val melFeatures = MelFeatures()
+    private val recorder by lazy { SampleRecorder(melFeatures) }
+
+    @Volatile
+    private var templates: List<Array<FloatArray>> = emptyList()
+
+    @Volatile
+    private var threshold: Float? = null
+
+    @Volatile
+    private var selfMin: Float = 0f
+
+    @Volatile
+    private var selfMean: Float = 0f
+
+    @Volatile
+    private var busy = false
+
+    private var pendingAction: (() -> Unit)? = null
+
+    private val hotwordDir: File
+        get() = File(filesDir, "hotword")
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 96, 48, 48)
+        }
+        val title = TextView(this).apply {
+            text = "Hotword Spike — замер постоянного прослушивания"
+            textSize = 20f
+        }
+        val startButton = Button(this).apply {
+            text = "Старт"
+            setOnClickListener { requestAndStart() }
+        }
+        val stopButton = Button(this).apply {
+            text = "Стоп"
+            setOnClickListener {
+                ListenService.stop(this@MainActivity)
+                refresh()
+            }
+        }
+        val refreshButton = Button(this).apply {
+            text = "Обновить лог"
+            setOnClickListener { refresh() }
+        }
+        val samplesButton = Button(this).apply {
+            text = "Записать 10 образцов"
+            setOnClickListener { withAudioPermission { recordSamples() } }
+        }
+        val backgroundButton = Button(this).apply {
+            text = "Записать фон 30 с"
+            setOnClickListener { withAudioPermission { recordBackground() } }
+        }
+        val buildButton = Button(this).apply {
+            text = "Собрать templates.bin"
+            setOnClickListener { buildTemplates() }
+        }
+        val exportButton = Button(this).apply {
+            text = "Выгрузить"
+            setOnClickListener { exportFiles() }
+        }
+        status = TextView(this).apply {
+            textSize = 12f
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply {
+            addView(status)
+        }
+
+        layout.addView(title)
+        layout.addView(startButton)
+        layout.addView(stopButton)
+        layout.addView(refreshButton)
+        layout.addView(samplesButton)
+        layout.addView(backgroundButton)
+        layout.addView(buildButton)
+        layout.addView(exportButton)
+        layout.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
+            ),
+        )
+        setContentView(layout)
+
+        val wake = getSystemService(PowerManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !wake.isIgnoringBatteryOptimizations(packageName)) {
+            status.text = "Подсказка: разрешите работу без ограничений в настройках батареи, иначе HyperOS убьёт сервис."
+        }
+        loadSavedCalibration()
+        refresh()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refresh()
+    }
+
+    private fun requestAndStart() {
+        val missing = mutableListOf<String>()
+        if (!hasAudioPermission()) {
+            missing += Manifest.permission.RECORD_AUDIO
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            missing += Manifest.permission.POST_NOTIFICATIONS
+        }
+        if (missing.isEmpty()) {
+            start()
+        } else {
+            requestPermissions(missing.toTypedArray(), REQUEST_PERMISSIONS)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            REQUEST_PERMISSIONS -> {
+                if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                    start()
+                } else {
+                    status.text = "Без разрешений сервис не запустится."
+                }
+            }
+
+            REQUEST_AUDIO -> {
+                val action = pendingAction
+                pendingAction = null
+                if (hasAudioPermission()) {
+                    action?.invoke()
+                } else {
+                    setStatus("Без доступа к микрофону запись невозможна.")
+                }
+            }
+        }
+    }
+
+    private fun start() {
+        try {
+            ListenService.start(this)
+            status.text = "Сервис запущен."
+        } catch (t: Throwable) {
+            status.text = "Не удалось запустить: ${t.javaClass.simpleName} ${t.message}"
+        }
+        refresh()
+    }
+
+    private fun refresh() {
+        val file = File(createDeviceProtectedStorageContext().filesDir, "spike.log")
+        val tail = if (file.exists()) {
+            file.readLines().takeLast(60).joinToString("\n")
+        } else {
+            "Лог пуст."
+        }
+        status.text = "Лог: ${file.absolutePath}\n\n$tail"
+    }
+
+    private fun hasAudioPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun withAudioPermission(action: () -> Unit) {
+        if (hasAudioPermission()) {
+            action()
+        } else {
+            pendingAction = action
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_AUDIO)
+        }
+    }
+
+    private fun recordSamples() {
+        runInBackground {
+            setStatus("Запись образцов: приготовьтесь…")
+            val recorded = ArrayList<Array<FloatArray>>(SAMPLE_COUNT)
+            for (index in 1..SAMPLE_COUNT) {
+                setStatus("Образец $index/$SAMPLE_COUNT")
+                recorded += recorder.record(SAMPLE_MILLIS)
+                if (index < SAMPLE_COUNT) Thread.sleep(PAUSE_MILLIS)
+            }
+            templates = recorded
+            logSelfScores(recorded)
+            setStatus("Готово: $SAMPLE_COUNT образцов")
+            logger.log("samples recorded count=$SAMPLE_COUNT")
+        }
+    }
+
+    private fun logSelfScores(samples: List<Array<FloatArray>>) {
+        val scores = samples.mapIndexed { index, sample ->
+            var best = Float.MAX_VALUE
+            samples.forEachIndexed { other, candidate ->
+                if (other != index) {
+                    val score = Dtw.score(candidate, sample)
+                    if (score < best) best = score
+                }
+            }
+            logger.log("sample ${index + 1} self=$best")
+            best
+        }
+        selfMin = scores.minOrNull() ?: 0f
+        selfMean = if (scores.isEmpty()) 0f else scores.average().toFloat()
+        logger.log("selfScores min=$selfMin mean=$selfMean")
+    }
+
+    private fun recordBackground() {
+        if (templates.isEmpty()) {
+            setStatus("Сначала запишите образцы.")
+            return
+        }
+        runInBackground {
+            if (selfMin == 0f && templates.size > 1) logSelfScores(templates)
+            setStatus("Запись фона 30 с…")
+            val raw = recorder.recordRaw(BACKGROUND_MILLIS)
+            setStatus("Считаю порог…")
+            val features = melFeatures.logMel(raw)
+            val minBackground = minBackgroundScore(features)
+            if (minBackground == Float.MAX_VALUE) {
+                setStatus("Недостаточно фона для калибровки (${features.size} кадров).")
+                return@runInBackground
+            }
+            val calibrated = (minBackground - THRESHOLD_MARGIN).coerceIn(MIN_THRESHOLD, MAX_THRESHOLD)
+            threshold = calibrated
+            TemplateStore.saveThreshold(hotwordDir, calibrated)
+            val message = "calibration selfMin=$selfMin selfMean=$selfMean bgMin=$minBackground threshold=$calibrated"
+            logger.log(message)
+            setStatus("Порог: $calibrated\n$message")
+        }
+    }
+
+    private fun minBackgroundScore(features: Array<FloatArray>): Float {
+        if (features.size < WINDOW_FRAMES) return Float.MAX_VALUE
+        var minBackground = Float.MAX_VALUE
+        var start = 0
+        while (start + WINDOW_FRAMES <= features.size) {
+            val window = features.copyOfRange(start, start + WINDOW_FRAMES)
+            var best = Float.MAX_VALUE
+            templates.forEach { template ->
+                val score = Dtw.score(template, window)
+                if (score < best) best = score
+            }
+            if (best < minBackground) minBackground = best
+            start += WINDOW_STEP
+        }
+        return minBackground
+    }
+
+    private fun buildTemplates() {
+        if (templates.isEmpty()) {
+            setStatus("Сначала запишите образцы.")
+            return
+        }
+        val value = threshold
+        if (value == null) {
+            setStatus("Сначала запишите фон 30 с для калибровки.")
+            return
+        }
+        runInBackground {
+            TemplateStore.saveTemplates(hotwordDir, TemplateStore.TEMPLATES_FILE, templates)
+            TemplateStore.saveThreshold(hotwordDir, value)
+            setStatus(
+                "Сохранено: ${File(hotwordDir, TemplateStore.TEMPLATES_FILE).absolutePath}\n" +
+                    "Порог: ${File(hotwordDir, TemplateStore.THRESHOLD_FILE).absolutePath}",
+            )
+            logger.log("templates saved count=${templates.size} threshold=$value")
+        }
+    }
+
+    private fun exportFiles() {
+        runInBackground {
+            val target = getExternalFilesDir(null)
+            if (target == null) {
+                setStatus("Внешнее хранилище недоступно.")
+                return@runInBackground
+            }
+            target.mkdirs()
+            val names = listOf(TemplateStore.TEMPLATES_FILE, TemplateStore.THRESHOLD_FILE)
+            val copied = names.mapNotNull { name ->
+                val source = File(hotwordDir, name)
+                if (!source.exists()) return@mapNotNull null
+                val dest = File(target, name)
+                source.copyTo(dest, overwrite = true)
+                dest
+            }
+            if (copied.isEmpty()) {
+                setStatus("Нечего выгружать: сначала соберите файлы.")
+            } else {
+                setStatus("Выгружено:\n" + copied.joinToString("\n") { it.absolutePath })
+                logger.log("exported ${copied.joinToString { it.absolutePath }}")
+            }
+        }
+    }
+
+    private fun loadSavedCalibration() {
+        val savedTemplates = runCatching {
+            TemplateStore.loadTemplatesFromDir(hotwordDir, TemplateStore.TEMPLATES_FILE)
+        }.getOrDefault(emptyList())
+        if (savedTemplates.isNotEmpty()) templates = savedTemplates
+        threshold = runCatching { TemplateStore.loadThresholdFromDir(hotwordDir) }.getOrNull()
+        logger.log("loaded templates=${templates.size} threshold=${threshold ?: "none"}")
+    }
+
+    private fun runInBackground(block: () -> Unit) {
+        if (busy) {
+            setStatus("Дождитесь завершения текущей операции.")
+            return
+        }
+        busy = true
+        Thread {
+            try {
+                block()
+            } catch (t: Throwable) {
+                logger.log("operation failed: ${t.javaClass.simpleName} ${t.message}")
+                setStatus("Ошибка: ${t.javaClass.simpleName} ${t.message}")
+            } finally {
+                busy = false
+            }
+        }.start()
+    }
+
+    private fun setStatus(text: String) {
+        runOnUiThread {
+            if (!isFinishing && !isDestroyed) status.text = text
+        }
+    }
+
+    companion object {
+        private const val REQUEST_PERMISSIONS = 1
+        private const val REQUEST_AUDIO = 2
+
+        private const val SAMPLE_COUNT = 10
+        private const val SAMPLE_MILLIS = 2200
+        private const val PAUSE_MILLIS = 700L
+        private const val BACKGROUND_MILLIS = 30_000
+
+        private const val WINDOW_FRAMES = 200
+        private const val WINDOW_STEP = 10
+        private const val THRESHOLD_MARGIN = 0.05f
+        private const val MIN_THRESHOLD = 0.01f
+        private const val MAX_THRESHOLD = 5f
+    }
+}
+
+===== FILE: C:\work\samokontrol\hotword-spike\src\test\java\ru\samokontrol\hotwordspike\kws\TemplateStoreTest.kt =====
+package ru.samokontrol.hotwordspike.kws
+
+import java.nio.file.Files
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class TemplateStoreTest {
+    @Test
+    fun `templates survive round trip`() {
+        val dir = Files.createTempDirectory("hwk").toFile()
+        val t = listOf(Array(3) { floatArrayOf(1f, -2.5f) }, Array(2) { floatArrayOf(0.25f, 7f) })
+        TemplateStore.saveTemplates(dir, "t.bin", t)
+        val back = TemplateStore.loadTemplatesFromDir(dir, "t.bin")
+        assertEquals(2, back.size)
+        assertEquals(3, back[0].size)
+        assertEquals(-2.5f, back[0][1][1], 0.0001f)
+        assertEquals(7f, back[1][1][1], 0.0001f)
+    }
+
+    @Test
+    fun `threshold survives round trip`() {
+        val dir = Files.createTempDirectory("hwk").toFile()
+        TemplateStore.saveThreshold(dir, 0.42f)
+        assertEquals(0.42f, TemplateStore.loadThresholdFromDir(dir), 0.0001f)
+    }
+
+    @Test
+    fun `rectangular file has exactly expected length`() {
+        val dir = Files.createTempDirectory("hwk").toFile()
+        val t = listOf(
+            Array(3) { floatArrayOf(1f, 2f) },
+            Array(3) { floatArrayOf(3f, 4f) },
+        )
+        TemplateStore.saveTemplates(dir, "t.bin", t)
+        // 16 байт заголовка + count * rows * dims * 4, без хвостовых нулей.
+        val expected = 16 + t.size * 3 * 2 * 4
+        assertEquals(expected.toLong(), java.io.File(dir, "t.bin").length())
+    }
+
+    @Test
+    fun `truncated file is rejected`() {
+        val dir = Files.createTempDirectory("hwk").toFile()
+        TemplateStore.saveTemplates(dir, "t.bin", listOf(Array(3) { floatArrayOf(1f, 2f) }))
+        val file = java.io.File(dir, "t.bin")
+        file.writeBytes(file.readBytes().copyOf(20))
+        assertEquals(0, TemplateStore.loadTemplatesFromDir(dir, "t.bin").size)
+    }
+
+    @Test
+    fun `absurd count does not allocate and is rejected`() {
+        val dir = Files.createTempDirectory("hwk").toFile()
+        val buffer = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        buffer.put("HWK1".toByteArray(Charsets.US_ASCII))
+        buffer.putInt(Int.MAX_VALUE)
+        buffer.putInt(10)
+        buffer.putInt(2)
+        java.io.File(dir, "t.bin").writeBytes(buffer.array())
+        assertEquals(0, TemplateStore.loadTemplatesFromDir(dir, "t.bin").size)
+    }
+
+    @Test
+    fun `templates file uses little endian`() {
+        val dir = Files.createTempDirectory("hwk").toFile()
+        TemplateStore.saveTemplates(dir, "t.bin", listOf(Array(1) { floatArrayOf(1f) }))
+        val bytes = java.io.File(dir, "t.bin").readBytes()
+        assertEquals('H'.code.toByte(), bytes[0])
+        assertEquals('W'.code.toByte(), bytes[1])
+        assertEquals('K'.code.toByte(), bytes[2])
+        assertEquals('1'.code.toByte(), bytes[3])
+        // count = 1 (little-endian)
+        assertEquals(1.toByte(), bytes[4])
+        assertEquals(0.toByte(), bytes[5])
+        // float 1.0f little-endian = 00 00 80 3F
+        assertEquals(0.toByte(), bytes[16])
+        assertEquals(0.toByte(), bytes[17])
+        assertEquals(0x80.toByte(), bytes[18])
+        assertEquals(0x3F.toByte(), bytes[19])
+    }
+}
