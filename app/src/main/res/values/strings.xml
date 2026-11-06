@@ -6,9 +6,9 @@
     <string name="voice_widget_button">Записать голосом</string>
     <string name="shortcut_sugar_short">Записать</string>
     <string name="shortcut_sugar_long">Быстрая запись сахара голосом</string>
-    <string name="pin_shortcut_action">Добавить на рабочий стол</string>
-    <string name="pin_shortcut_unsupported">Лаунчер не поддерживает ярлыки на рабочем столе</string>
-    <string name="pin_shortcut_failed">Не удалось добавить ярлык</string>
+    <string name="pin_shortcut_action">Добавить виджет «Записать» на рабочий стол</string>
+    <string name="pin_widget_unsupported">Лаунчер не поддерживает добавление виджета. Удерживайте рабочий стол → Виджеты → Дневник самоконтроля.</string>
+    <string name="pin_widget_failed">Не удалось добавить виджет</string>
     <string name="widget_icon_name">Записать (иконка)</string>
     <string name="widget_icon_description">Быстрая запись сахара одной иконкой на рабочем столе</string>
 </resources>

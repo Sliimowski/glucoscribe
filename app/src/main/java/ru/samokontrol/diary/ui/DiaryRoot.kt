@@ -37,7 +37,7 @@ import ru.samokontrol.diary.ui.screens.DiaryScreen
 import ru.samokontrol.diary.ui.screens.NewEventInput
 import ru.samokontrol.diary.ui.screens.ReportScreen
 import ru.samokontrol.diary.ui.voice.VoiceEntryFlow
-import ru.samokontrol.diary.voice.VoiceShortcuts
+import ru.samokontrol.diary.voice.VoiceWidgets
 
 private data class Tab(val title: String, val icon: ImageVector)
 
@@ -72,7 +72,7 @@ fun DiaryRoot(viewModel: DiaryViewModel = viewModel()) {
                 ),
                 actions = {
                     if (selectedTab == 0) {
-                        IconButton(onClick = { VoiceShortcuts.pin(context) }) {
+                        IconButton(onClick = { VoiceWidgets.pinIcon(context) }) {
                             Icon(
                                 painter = painterResource(R.drawable.ic_pin_home),
                                 contentDescription = stringResource(R.string.pin_shortcut_action),
