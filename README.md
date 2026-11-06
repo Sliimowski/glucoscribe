@@ -51,6 +51,23 @@ gradlew.bat :app:testDebugUnitTest :app:assembleDebug
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`.
 
+## CI (GitHub Actions)
+
+Приватный репозиторий: `Sliimowski/samokontrol`.
+
+На каждый пуш в `main`, тег `v*` и pull request запускается
+`.github/workflows/android-ci.yml` — два задания на облачном раннере GitHub
+(`ubuntu-latest`, JDK 17, Android SDK 36):
+
+| Задание | Что делает |
+|---|---|
+| `Unit tests` | `./gradlew :app:testDebugUnitTest` — 26 JVM-тестов домена |
+| `Build debug APK` | `./gradlew :app:assembleDebug`, APK сохраняется в артефактах на 30 дней |
+
+Тесты идут в JVM на сервере GitHub, а не на телефоне. Инструментальные тесты
+(`androidTest`) и эмулятор в CI не входят. Отчёт тестов и APK скачиваются на
+вкладке **Actions** → нужный прогон → **Artifacts**.
+
 ## Голосовой ввод
 
 Записать измерение голосом можно тремя способами:
