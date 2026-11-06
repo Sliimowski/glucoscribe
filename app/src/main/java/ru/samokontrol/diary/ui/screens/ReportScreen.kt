@@ -34,6 +34,7 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import ru.samokontrol.diary.data.DiaryEvent
 import ru.samokontrol.diary.data.GlucoseEntry
 import ru.samokontrol.diary.domain.Glucose
 import ru.samokontrol.diary.domain.GlucoseMetrics
@@ -49,6 +50,7 @@ private val PERIODS = listOf(14, 30, 90)
 
 @Composable
 fun ReportScreen(
+    events: List<DiaryEvent>,
     entries: List<GlucoseEntry>,
     unit: GlucoseUnit,
     statsFor: (Int) -> GlucoseStats,
@@ -61,6 +63,10 @@ fun ReportScreen(
         val now = System.currentTimeMillis()
         entries.filter { it.measuredAt >= now - days * DiaryViewModel.DAY_MILLIS }
     }
+    val periodEvents = remember(events, days) {
+        val now = System.currentTimeMillis()
+        events.filter { it.occurredAt >= now - days * DiaryViewModel.DAY_MILLIS }
+    }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -71,9 +77,9 @@ fun ReportScreen(
             runCatching {
                 val uri = withContext(Dispatchers.IO) {
                     if (pdf) {
-                        ReportExporter.exportPdf(context, periodEntries, stats, unit, days)
+                        ReportExporter.exportPdf(context, periodEvents, periodEntries, stats, unit, days)
                     } else {
-                        ReportExporter.exportCsv(context, periodEntries, unit)
+                        ReportExporter.exportCsv(context, periodEvents, unit)
                     }
                 }
                 ReportExporter.share(

@@ -13,7 +13,10 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import ru.samokontrol.diary.data.DiaryEvent
 import ru.samokontrol.diary.data.GlucoseEntry
+import ru.samokontrol.diary.data.MeasurementContext
+import ru.samokontrol.diary.domain.EventInput
 import ru.samokontrol.diary.domain.Glucose
 import ru.samokontrol.diary.domain.GlucoseMetrics
 import ru.samokontrol.diary.domain.GlucoseStats
@@ -29,12 +32,13 @@ object ReportExporter {
     private const val PAGE_HEIGHT = 842
     private const val MARGIN = 40f
 
-    private val dateTimeFormat = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm", Locale("ru"))
-    private val dateFormat = DateTimeFormatter.ofPattern("dd.MM.yyyy", Locale("ru"))
-    private val timeFormat = DateTimeFormatter.ofPattern("HH:mm", Locale("ru"))
+    private val dateTimeFormat = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm", Locale.forLanguageTag("ru"))
+    private val dateFormat = DateTimeFormatter.ofPattern("dd.MM.yyyy", Locale.forLanguageTag("ru"))
+    private val timeFormat = DateTimeFormatter.ofPattern("HH:mm", Locale.forLanguageTag("ru"))
 
     fun exportPdf(
         context: Context,
+        events: List<DiaryEvent>,
         entries: List<GlucoseEntry>,
         stats: GlucoseStats,
         unit: GlucoseUnit,
@@ -119,37 +123,131 @@ object ReportExporter {
         text("Дней с данными: ${stats.measuredDays} из ${stats.periodDays} (${fmt(stats.completenessPercent)} %)")
         text("GMI (оценка, не HbA1c): ${fmt(stats.gmiPercent)} %")
         text("Оценка HbA1c по ADAG (не лабораторный): ${fmt(stats.estimatedHba1cPercent)} %")
+
+        val insulin = events.filterIsInstance<DiaryEvent.Insulin>()
+        if (insulin.isNotEmpty()) {
+            val total = insulin.sumOf { it.unitsMilli }
+            text("Инсулин: ${insulin.size} записей, суммарно ${EventInput.formatInsulinUnits(total)}")
+        }
+        val carbs = events.filterIsInstance<DiaryEvent.Carbs>()
+        if (carbs.isNotEmpty()) {
+            val total = carbs.sumOf { it.gramsX10 }
+            text("Углеводы: ${carbs.size} записей, суммарно ${EventInput.formatCarbs(total)}")
+        }
         y += 8f
         divider()
 
-        text("Измерения", size = 15f, bold = true)
-        newPageIfNeeded(30f)
-        paint.textSize = 10f
-        paint.color = Color.BLACK
-        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        canvas.drawText("Дата и время", MARGIN, y, paint)
-        canvas.drawText("Глюкоза", 230f, y, paint)
-        canvas.drawText("Контекст", 320f, y, paint)
-        canvas.drawText("Заметка", 460f, y, paint)
-        y += 14f
-        divider()
+        // График глюкозы за период.
+        text("Глюкоза за период", size = 13f, bold = true)
+        val chartHeight = 190f
+        newPageIfNeeded(chartHeight + 40f)
+        run {
+            val plotLeft = MARGIN + 34f
+            val plotRight = PAGE_WIDTH - MARGIN
+            val plotTop = y
+            val plotBottom = y + chartHeight
 
-        entries.sortedByDescending { it.measuredAt }.take(500).forEach { entry ->
-            newPageIfNeeded(18f)
-            val zoned = Instant.ofEpochMilli(entry.measuredAt).atZone(ZoneId.systemDefault())
-            paint.textSize = 10f
-            paint.color = Color.BLACK
+            fun gy(mgdl: Float): Float =
+                plotTop + (plotBottom - plotTop) * (1f - (mgdl - 40f) / (300f - 40f))
+
+            fun gx(time: Long): Float {
+                val fraction = ((time - periodStart).toFloat() / (now - periodStart).toFloat())
+                    .coerceIn(0f, 1f)
+                return plotLeft + (plotRight - plotLeft) * fraction
+            }
+
+            paint.style = Paint.Style.FILL
+            paint.color = Color.argb(28, 0, 150, 100)
+            canvas.drawRect(plotLeft, gy(180f), plotRight, gy(70f), paint)
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 0.5f
+            paint.color = Color.LTGRAY
+            listOf(70f, 180f, 300f).forEach { value ->
+                val lineY = gy(value)
+                canvas.drawLine(plotLeft, lineY, plotRight, lineY, paint)
+            }
+
+            if (entries.isNotEmpty()) {
+                paint.color = Color.rgb(0, 121, 107)
+                paint.strokeWidth = 1.5f
+                val sorted = entries.sortedBy { it.measuredAt }
+                var previous: Pair<Float, Float>? = null
+                sorted.forEach { entry ->
+                    val pointX = gx(entry.measuredAt)
+                    val pointY = gy(entry.mgdl.toFloat().coerceIn(40f, 300f))
+                    previous?.let { canvas.drawLine(it.first, it.second, pointX, pointY, paint) }
+                    previous = pointX to pointY
+                }
+
+                paint.style = Paint.Style.FILL
+                sorted.forEach { entry ->
+                    val pointX = gx(entry.measuredAt)
+                    val pointY = gy(entry.mgdl.toFloat().coerceIn(40f, 300f))
+                    paint.color = when {
+                        entry.mgdl < GlucoseMetrics.DEFAULT_LOW -> Color.rgb(179, 38, 30)
+                        entry.mgdl > GlucoseMetrics.DEFAULT_HIGH -> Color.rgb(180, 83, 9)
+                        else -> Color.rgb(0, 121, 107)
+                    }
+                    canvas.drawCircle(pointX, pointY, 2.5f, paint)
+                }
+            }
+
+            paint.style = Paint.Style.FILL
+            paint.textSize = 8f
+            paint.color = Color.GRAY
             paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-            canvas.drawText(dateTimeFormat.format(zoned), MARGIN, y, paint)
+            listOf(300, 180, 70, 40).forEach { value ->
+                canvas.drawText(value.toString(), MARGIN, gy(value.toFloat()) + 3f, paint)
+            }
             canvas.drawText(
-                "${Glucose.format(entry.mgdl, unit)} ${unit.title}",
-                230f,
-                y,
+                dateFormat.format(Instant.ofEpochMilli(periodStart).atZone(ZoneId.systemDefault())),
+                plotLeft,
+                plotBottom + 12f,
                 paint,
             )
-            canvas.drawText(entry.context.title, 320f, y, paint)
-            canvas.drawText(entry.note.take(24), 460f, y, paint)
-            y += 16f
+            canvas.drawText(
+                dateFormat.format(Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault())),
+                plotRight - 46f,
+                plotBottom + 12f,
+                paint,
+            )
+            y = plotBottom + 24f
+        }
+
+        y += 4f
+        divider()
+
+        text("По контекстам", size = 13f, bold = true)
+        MeasurementContext.entries.forEach { context ->
+            val list = entries.filter { it.context == context }
+            if (list.isNotEmpty()) {
+                val mean = list.sumOf { it.mgdl }.toDouble() / list.size
+                val below = list.count { it.mgdl < stats.lowMgdl } * 100.0 / list.size
+                val above = list.count { it.mgdl > stats.highMgdl } * 100.0 / list.size
+                text(
+                    "${context.title}: ${list.size} изм., средний ${fmtGlucose(mean, unit)} ${unit.title}, " +
+                        "ниже ${fmt(below)} %, выше ${fmt(above)} %",
+                    size = 10f,
+                )
+            }
+        }
+
+        val lows = entries.filter { it.mgdl < stats.lowMgdl }.sortedByDescending { it.measuredAt }
+        if (lows.isNotEmpty()) {
+            y += 4f
+            text("Эпизоды ниже диапазона: ${lows.size}", size = 13f, bold = true)
+            lows.take(20).forEach { entry ->
+                val zoned = Instant.ofEpochMilli(entry.measuredAt).atZone(ZoneId.systemDefault())
+                text(
+                    "${dateTimeFormat.format(zoned)} — ${Glucose.format(entry.mgdl, unit)} ${unit.title}, " +
+                        entry.context.title,
+                    size = 10f,
+                )
+            }
+            if (lows.size > 20) {
+                text("…и ещё ${lows.size - 20}; полный список — в CSV.", size = 9f, color = Color.GRAY)
+            }
         }
 
         y += 8f
@@ -158,7 +256,11 @@ object ReportExporter {
             size = 9f,
             color = Color.GRAY,
         )
-        text("Сформировано: ${dateTimeFormat.format(Instant.now().atZone(ZoneId.systemDefault()))}", size = 9f, color = Color.GRAY)
+        text(
+            "Сформировано: ${dateTimeFormat.format(Instant.now().atZone(ZoneId.systemDefault()))}",
+            size = 9f,
+            color = Color.GRAY,
+        )
 
         document.finishPage(page)
         val file = reportFile(context, "diary", "pdf")
@@ -169,34 +271,98 @@ object ReportExporter {
 
     fun exportCsv(
         context: Context,
-        entries: List<GlucoseEntry>,
+        events: List<DiaryEvent>,
         unit: GlucoseUnit,
     ): Uri {
         val file = reportFile(context, "diary", "csv")
         file.bufferedWriter(Charsets.UTF_8).use { writer ->
             writer.write("\uFEFF")
-            writer.write("Дата;Время;Глюкоза;Единица;Контекст;Заметка\n")
-            entries.sortedByDescending { it.measuredAt }.forEach { entry ->
-                val zoned = Instant.ofEpochMilli(entry.measuredAt).atZone(ZoneId.systemDefault())
-                val value = when (unit) {
-                    GlucoseUnit.MGDL -> entry.mgdl.toString()
-                    GlucoseUnit.MMOLL -> String.format(Locale.US, "%.1f", Glucose.mgdlToMmol(entry.mgdl))
-                        .replace('.', ',')
-                }
+            writer.write("Дата;Время;Тип;Значение;Единица;Детали;Заметка\n")
+            events.sortedByDescending { it.occurredAt }.forEach { event ->
+                val zoned = Instant.ofEpochMilli(event.occurredAt).atZone(ZoneId.systemDefault())
+                val row = csvRow(event, unit)
                 writer.write(
                     listOf(
                         dateFormat.format(zoned),
                         timeFormat.format(zoned),
-                        value,
-                        unit.title,
-                        entry.context.title,
-                        entry.note,
+                        row.type,
+                        row.value,
+                        row.unit,
+                        row.details,
+                        event.note,
                     ).joinToString(";") { escapeCsv(it) },
                 )
                 writer.write("\n")
             }
         }
         return uriFor(context, file)
+    }
+
+    private data class CsvRow(
+        val type: String,
+        val value: String,
+        val unit: String,
+        val details: String,
+    )
+
+    private fun csvRow(event: DiaryEvent, unit: GlucoseUnit): CsvRow = when (event) {
+        is DiaryEvent.Glucose -> CsvRow(
+            type = "Глюкоза",
+            value = when (unit) {
+                GlucoseUnit.MGDL -> event.mgdl.toString()
+                GlucoseUnit.MMOLL -> String.format(Locale.US, "%.1f", Glucose.mgdlToMmol(event.mgdl))
+                    .replace('.', ',')
+            },
+            unit = unit.title,
+            details = event.context.title,
+        )
+
+        is DiaryEvent.Insulin -> CsvRow(
+            type = "Инсулин",
+            value = EventInput.formatInsulinUnits(event.unitsMilli).substringBefore(" "),
+            unit = "ЕД",
+            details = buildString {
+                append(event.kind.title)
+                if (event.insulinType.isNotBlank()) append(" · ${event.insulinType}")
+            },
+        )
+
+        is DiaryEvent.Carbs -> CsvRow(
+            type = "Углеводы",
+            value = EventInput.formatCarbs(event.gramsX10).substringBefore(" "),
+            unit = "г",
+            details = event.mealType.title,
+        )
+
+        is DiaryEvent.Weight -> CsvRow(
+            type = "Вес",
+            value = EventInput.formatWeight(event.weightG).substringBefore(" "),
+            unit = "кг",
+            details = "",
+        )
+
+        is DiaryEvent.BloodPressure -> CsvRow(
+            type = "Давление",
+            value = "${event.systolic}/${event.diastolic}",
+            unit = "мм рт. ст.",
+            details = event.pulse?.let { "пульс $it" }.orEmpty(),
+        )
+
+        is DiaryEvent.Ketones -> CsvRow(
+            type = "Кетоны",
+            value = event.mmolLX10?.let { EventInput.formatKetones(it).substringBefore(" ") }
+                ?: event.urineGrade?.toString()
+                ?: "",
+            unit = if (event.mmolLX10 != null) "ммоль/л" else "степень",
+            details = event.urineGrade?.let { "моча: $it" }.orEmpty(),
+        )
+
+        is DiaryEvent.Hba1c -> CsvRow(
+            type = "HbA1c",
+            value = EventInput.formatHba1c(event.percentX10).substringBefore(" "),
+            unit = "%",
+            details = "${event.mmolMol} ммоль/моль",
+        )
     }
 
     fun share(context: Context, uri: Uri, mimeType: String, chooserTitle: String) {
@@ -212,7 +378,7 @@ object ReportExporter {
         context.startActivity(chooser)
     }
 
-    private fun fmt(value: Double): String = String.format(Locale("ru"), "%.1f", value)
+    private fun fmt(value: Double): String = String.format(Locale.forLanguageTag("ru"), "%.1f", value)
 
     private fun fmtGlucose(mgdl: Double, unit: GlucoseUnit): String = when (unit) {
         GlucoseUnit.MGDL -> fmt(mgdl)

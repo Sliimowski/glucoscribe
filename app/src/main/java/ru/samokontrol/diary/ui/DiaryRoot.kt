@@ -31,9 +31,10 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ru.samokontrol.diary.R
-import ru.samokontrol.diary.ui.screens.AddEntryDialog
+import ru.samokontrol.diary.ui.screens.AddEventDialog
 import ru.samokontrol.diary.ui.screens.ChartScreen
 import ru.samokontrol.diary.ui.screens.DiaryScreen
+import ru.samokontrol.diary.ui.screens.NewEventInput
 import ru.samokontrol.diary.ui.screens.ReportScreen
 import ru.samokontrol.diary.ui.voice.VoiceEntryFlow
 import ru.samokontrol.diary.voice.VoiceShortcuts
@@ -50,6 +51,7 @@ fun DiaryRoot(viewModel: DiaryViewModel = viewModel()) {
     val context = LocalContext.current
 
     val entries by viewModel.entries.collectAsState()
+    val events by viewModel.events.collectAsState()
     val unit by viewModel.unit.collectAsState()
     val tabs = remember {
         listOf(
@@ -109,7 +111,7 @@ fun DiaryRoot(viewModel: DiaryViewModel = viewModel()) {
         val modifier = Modifier.padding(innerPadding)
         when (selectedTab) {
             0 -> DiaryScreen(
-                entries = entries,
+                events = events,
                 unit = unit,
                 onDelete = viewModel::delete,
                 modifier = modifier,
@@ -120,6 +122,7 @@ fun DiaryRoot(viewModel: DiaryViewModel = viewModel()) {
                 modifier = modifier,
             )
             else -> ReportScreen(
+                events = events,
                 entries = entries,
                 unit = unit,
                 statsFor = viewModel::statsFor,
@@ -138,11 +141,48 @@ fun DiaryRoot(viewModel: DiaryViewModel = viewModel()) {
     )
 
     if (showAddDialog) {
-        AddEntryDialog(
+        AddEventDialog(
             unit = unit,
             onDismiss = { showAddDialog = false },
-            onConfirm = { mgdl, context, note ->
-                viewModel.add(mgdl = mgdl, context = context, note = note)
+            onConfirm = { input, note ->
+                when (input) {
+                    is NewEventInput.Glucose ->
+                        viewModel.add(mgdl = input.mgdl, context = input.context, note = note)
+                    is NewEventInput.Insulin ->
+                        viewModel.addInsulin(
+                            unitsMilli = input.unitsMilli,
+                            kind = input.kind,
+                            insulinType = input.insulinType,
+                            note = note,
+                        )
+                    is NewEventInput.Carbs ->
+                        viewModel.addCarbs(
+                            gramsX10 = input.gramsX10,
+                            mealType = input.mealType,
+                            note = note,
+                        )
+                    is NewEventInput.Weight ->
+                        viewModel.addWeight(weightG = input.weightG, note = note)
+                    is NewEventInput.BloodPressure ->
+                        viewModel.addBloodPressure(
+                            systolic = input.systolic,
+                            diastolic = input.diastolic,
+                            pulse = input.pulse,
+                            note = note,
+                        )
+                    is NewEventInput.Ketones ->
+                        viewModel.addKetones(
+                            mmolLX10 = input.mmolLX10,
+                            urineGrade = null,
+                            note = note,
+                        )
+                    is NewEventInput.Hba1c ->
+                        viewModel.addHba1c(
+                            mmolMol = input.mmolMol,
+                            percentX10 = input.percentX10,
+                            note = note,
+                        )
+                }
                 showAddDialog = false
             },
         )
