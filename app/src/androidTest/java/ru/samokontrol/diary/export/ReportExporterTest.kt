@@ -1,8 +1,13 @@
 package ru.samokontrol.diary.export
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.io.File
 import java.nio.charset.StandardCharsets
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -64,12 +69,31 @@ class ReportExporterTest {
             now = now,
         )
 
-        val pdfBytes = context.contentResolver
-            .openInputStream(
-                ReportExporter.exportPdf(context, events, entries, stats, GlucoseUnit.MMOLL, 14),
-            )!!
-            .use { it.readBytes() }
-        assertTrue("PDF должен быть непустым", pdfBytes.size > 1000)
+        val pdfUri = ReportExporter.exportPdf(context, events, entries, stats, GlucoseUnit.MMOLL, 14)
+        val pdfFile = File(context.cacheDir, "test-report.pdf")
+        context.contentResolver.openInputStream(pdfUri)!!.use { input ->
+            pdfFile.outputStream().use { output -> input.copyTo(output) }
+        }
+        assertTrue("PDF должен быть непустым", pdfFile.length() > 1000)
+
+        ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+            PdfRenderer(descriptor).use { renderer ->
+                assertTrue("В PDF ожидается хотя бы одна страница", renderer.pageCount >= 1)
+                renderer.openPage(0).use { page ->
+                    val bitmap = Bitmap.createBitmap(
+                        page.width * 2,
+                        page.height * 2,
+                        Bitmap.Config.ARGB_8888,
+                    )
+                    bitmap.eraseColor(Color.WHITE)
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    File(context.cacheDir, "report-page0.png").outputStream().use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                    bitmap.recycle()
+                }
+            }
+        }
 
         val csv = context.contentResolver
             .openInputStream(
