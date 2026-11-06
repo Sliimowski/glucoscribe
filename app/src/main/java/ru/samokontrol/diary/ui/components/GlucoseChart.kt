@@ -22,9 +22,21 @@ import androidx.compose.ui.unit.sp
 import ru.samokontrol.diary.data.GlucoseEntry
 import ru.samokontrol.diary.domain.Glucose
 import ru.samokontrol.diary.domain.GlucoseUnit
+import java.time.Instant
+import java.time.ZoneId
 
 private const val Y_MIN = 40f
 private const val Y_MAX = 300f
+
+private val MONTHS_SHORT = arrayOf(
+    "янв", "фев", "мар", "апр", "май", "июн",
+    "июл", "авг", "сен", "окт", "ноя", "дек",
+)
+
+private fun formatDay(epochMillis: Long): String {
+    val date = Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault())
+    return "${date.dayOfMonth} ${MONTHS_SHORT[date.monthValue - 1]}"
+}
 
 @Composable
 fun GlucoseChart(
@@ -36,12 +48,19 @@ fun GlucoseChart(
     val lineColor = MaterialTheme.colorScheme.primary
     val bandColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f)
     val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+    val axisGridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     val sorted = remember(entries) { entries.sortedBy { it.measuredAt } }
-    val textPaint = remember {
+    val valuePaint = remember {
         android.graphics.Paint().apply {
             isAntiAlias = true
+        }
+    }
+    val datePaint = remember {
+        android.graphics.Paint().apply {
+            isAntiAlias = true
+            textAlign = android.graphics.Paint.Align.CENTER
         }
     }
 
@@ -57,12 +76,13 @@ fun GlucoseChart(
         val plotWidth = size.width - left - right
         val plotHeight = size.height - top - bottom
 
+        val now = System.currentTimeMillis()
+        val start = now - days * 24L * 60L * 60L * 1000L
+
         fun yFor(mgdl: Float): Float =
             top + plotHeight * (1f - (mgdl - Y_MIN) / (Y_MAX - Y_MIN))
 
         fun xFor(time: Long): Float {
-            val now = System.currentTimeMillis()
-            val start = now - days * 24L * 60L * 60L * 1000L
             val fraction = ((time - start).toFloat() / (now - start).toFloat()).coerceIn(0f, 1f)
             return left + plotWidth * fraction
         }
@@ -87,8 +107,28 @@ fun GlucoseChart(
             )
         }
 
-        textPaint.color = labelColor.toArgb()
-        textPaint.textSize = 10.sp.toPx()
+        // Даты по оси X: 4–5 равномерных меток за период.
+        val tickCount = if (days <= 7) 4 else 5
+        val tickFractions = List(tickCount) { index -> index / (tickCount - 1f) }
+        val tickTimes = tickFractions.map { fraction ->
+            start + ((now - start) * fraction).toLong()
+        }
+        val tickXs = tickFractions.map { fraction -> left + plotWidth * fraction }
+
+        // Вертикальная сетка по датам.
+        tickXs.forEach { x ->
+            drawLine(
+                color = axisGridColor,
+                start = Offset(x, top),
+                end = Offset(x, top + plotHeight),
+                strokeWidth = 1.dp.toPx(),
+            )
+        }
+
+        valuePaint.color = labelColor.toArgb()
+        valuePaint.textSize = 10.sp.toPx()
+        datePaint.color = labelColor.toArgb()
+        datePaint.textSize = 10.sp.toPx()
         drawIntoCanvas { canvas ->
             listOf(300, 180, 70, 40).forEach { value ->
                 val y = yFor(value.toFloat()) + 4.dp.toPx()
@@ -96,21 +136,21 @@ fun GlucoseChart(
                     Glucose.format(value, unit),
                     left - 8.dp.toPx(),
                     y,
-                    textPaint,
+                    valuePaint,
                 )
             }
-            canvas.nativeCanvas.drawText(
-                "−${days} дн.",
-                left,
-                size.height - 4.dp.toPx(),
-                textPaint,
-            )
-            canvas.nativeCanvas.drawText(
-                "сейчас",
-                left + plotWidth - 42.dp.toPx(),
-                size.height - 4.dp.toPx(),
-                textPaint,
-            )
+
+            tickXs.forEachIndexed { index, x ->
+                val label = formatDay(tickTimes[index])
+                val halfWidth = datePaint.measureText(label) / 2f
+                val centerX = x.coerceIn(left + halfWidth, left + plotWidth - halfWidth)
+                canvas.nativeCanvas.drawText(
+                    label,
+                    centerX,
+                    size.height - 4.dp.toPx(),
+                    datePaint,
+                )
+            }
         }
 
         if (sorted.isEmpty()) return@Canvas

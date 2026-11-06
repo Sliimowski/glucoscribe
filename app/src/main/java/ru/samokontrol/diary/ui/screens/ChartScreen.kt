@@ -39,7 +39,7 @@ fun ChartScreen(
     unit: GlucoseUnit,
     modifier: Modifier = Modifier,
 ) {
-    var days by rememberSaveable { mutableIntStateOf(14) }
+    var days by rememberSaveable { mutableIntStateOf(3) }
     val now = System.currentTimeMillis()
     val filtered = remember(entries, days) {
         entries.filter { it.measuredAt >= now - days * DiaryViewModel.DAY_MILLIS }
